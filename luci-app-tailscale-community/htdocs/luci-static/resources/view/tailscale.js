@@ -430,8 +430,8 @@ return view.extend({
 		+'<br>'+_('It automatically creates the tailscale interface, sets up firewall zones for LAN <-> Tailscale forwarding,')
 		+'<br>'+_('and enables Masquerading and MSS Clamping (MTU fix) to ensure stable connections.');
 		fwBtn.inputstyle = 'action';
-		fwBtn.onclick = function() {
-			const btn = this;
+		fwBtn.onclick = function(ev) {
+			const btn = ev.currentTarget;
 			btn.disabled = true;
 			return callSetupFirewall().then(function(res) {
 				const msg = res?.message || _('Firewall configuration applied.');

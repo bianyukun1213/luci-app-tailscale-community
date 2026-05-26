@@ -254,21 +254,18 @@ methods.setup_firewall = {
 			}
 
 			// 2. config Firewall Zone
-			let fw_all = uci.get_all('firewall');
 			let ts_zone_section = null;
 			let fwd_lan_to_ts = false;
 			let fwd_ts_to_lan = false;
 
-			for (let sec_key in fw_all) {
-				let s = fw_all[sec_key];
-				if (s['.type'] == 'zone' && s['name'] == 'tailscale') {
-					ts_zone_section = sec_key;
-				}
-				if (s['.type'] == 'forwarding') {
+			uci.foreach('firewall', 'zone', function(s) {
+				if (s['name'] == 'tailscale')
+				ts_zone_section = s['.name'];
+				});
+			uci.foreach('firewall', 'forwarding', function(s) {
 					if (s.src == 'lan' && s.dest == 'tailscale') fwd_lan_to_ts = true;
 					if (s.src == 'tailscale' && s.dest == 'lan') fwd_ts_to_lan = true;
-				}
-			}
+			});
 
 			if (ts_zone_section == null) {
 				let zid = uci.add('firewall', 'zone');
@@ -322,15 +319,10 @@ methods.setup_firewall = {
 			}
 
 			// Exit node requires WAN <- tailscale forwarding
-			fw_all = uci.get_all('firewall');
 			let fwd_ts_to_wan = false;
-
-			for (let sec_key in fw_all) {
-				let s = fw_all[sec_key];
-				if (s['.type'] == 'forwarding') {
-					if (s.src == 'tailscale' && s.dest == 'wan') fwd_ts_to_wan = true;
-				}
-			}
+			uci.foreach('firewall', 'forwarding', function(s) {
+				if (s.src == 'tailscale' && s.dest == 'wan') fwd_ts_to_wan = true;
+			});
 
 			if (!fwd_ts_to_wan) {
 				let fid = uci.add('firewall', 'forwarding');

@@ -289,8 +289,8 @@ methods.setup_firewall = {
 				}
 
 				// check if 'tailscale' is already in the list
-				for (let n in net_list) {
-					if (net_list[n] == 'tailscale') {
+				for (let i = 0; i < length(net_list); i++) {
+					if (net_list[i] == 'tailscale') {
 						has_ts_net = true;
 						break;
 					}

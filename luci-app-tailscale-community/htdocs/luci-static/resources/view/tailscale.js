@@ -430,18 +430,18 @@ return view.extend({
 		+'<br>'+_('It automatically creates the tailscale interface, sets up firewall zones for LAN <-> Tailscale forwarding,')
 		+'<br>'+_('and enables Masquerading and MSS Clamping (MTU fix) to ensure stable connections.');
 		fwBtn.inputstyle = 'action';
-		fwBtn.onclick = function(ev) {
-			const btn = ev.currentTarget;
-			btn.disabled = true;
+		fwBtn.onclick = function() {
 			return callSetupFirewall().then(function(res) {
-				const msg = res?.message || _('Firewall configuration applied.');
-				ui.addNotification(null, E('p', {}, msg), 'info');
-			}).catch(function(err) {
-				ui.addNotification(null, E('p', {}, _('Failed to configure firewall: %s').format(err?.message || err || 'Unknown error')), 'error');
-			}).finally(function() {
-				window.setTimeout(function() { btn.disabled = false; }, 5000);
+			const msg = res?.message || _('Firewall configuration applied.');
+			ui.addNotification(null, E('p', {}, msg), 'info');
+		}).catch(function(err) {
+			ui.addNotification(null, E('p', {}, _('Failed to configure firewall: %s').format(err?.message || err || 'Unknown error')), 'error');
+		}).then(function() {
+			return new Promise(function(resolve) {
+				window.setTimeout(resolve, 5000);
 			});
-		};
+		});
+	};
 
 		const helpTitle = s.taboption('general', form.DummyValue, '_help_title');
 		helpTitle.title = _('How to enable Site-to-Site?');
@@ -500,7 +500,7 @@ return view.extend({
 			}
 			// Display a prompt message in the new window
 			const doc = loginWindow.document;
-			doc.body.innerHTML = 
+			doc.body.innerHTML =
 				'<h2>' + _('Tailscale Login') + '</h2>' +
 				'<p>' + _('Requesting Tailscale login URL... Please wait.') + '</p>' +
 				'<p>' + _('This can take up to 30 seconds.') + '</p>';
@@ -519,7 +519,7 @@ return view.extend({
 					loginWindow.location.href = res.url;
 				} else {
 					// If it fails, inform the user and they can close the new tab
-					doc.body.innerHTML = 
+					doc.body.innerHTML =
 						'<h2>' + _('Error') + '</h2>' +
 						'<p>' + _('Failed to get login URL. You may close this tab.') + '</p>';
 					ui.addTimeLimitedNotification(null, [ E('p', _('Failed to get login URL: Invalid response from server.')) ], 7000, 'error');
@@ -534,13 +534,13 @@ return view.extend({
 			const confirmationContent = E([
 				E('p', {}, _('Are you sure you want to log out?')
 					+'<br>'+_('This will disconnect this device from your Tailnet and require you to re-authenticate.')),
-				
+
 				E('div', { 'style': 'text-align: right; margin-top: 1em;' }, [
 					E('button', {
 						'class': 'cbi-button',
 						'click': ui.hideModal
 					}, _('Cancel')),
-					' ', 
+					' ',
 					E('button', {
 						'class': 'cbi-button cbi-button-negative',
 						'click': function() {

@@ -262,10 +262,10 @@ methods.setup_firewall = {
 				if (s['name'] == 'tailscale')
 				ts_zone_section = s['.name'];
 				});
-			uci.foreach('firewall', 'forwarding', function(s) {
-					if (s.src == 'lan' && s.dest == 'tailscale') fwd_lan_to_ts = true;
-					if (s.src == 'tailscale' && s.dest == 'lan') fwd_ts_to_lan = true;
-			});
+				uci.foreach('firewall', 'forwarding', function(s) {
+					if (s['src'] == 'lan' && s['dest'] == 'tailscale') fwd_lan_to_ts = true;
+					if (s['src'] == 'tailscale' && s['dest'] == 'lan') fwd_ts_to_lan = true;
+				});
 
 			if (ts_zone_section == null) {
 				let zid = uci.add('firewall', 'zone');
@@ -321,7 +321,7 @@ methods.setup_firewall = {
 			// Exit node requires WAN <- tailscale forwarding
 			let fwd_ts_to_wan = false;
 			uci.foreach('firewall', 'forwarding', function(s) {
-				if (s.src == 'tailscale' && s.dest == 'wan') fwd_ts_to_wan = true;
+				if (s['src'] == 'tailscale' && s['dest'] == 'wan') fwd_ts_to_wan = true;
 			});
 
 			if (!fwd_ts_to_wan) {

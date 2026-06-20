@@ -173,6 +173,7 @@ jobs:
           cp -al "$SDK_DIR_NAME" "${SDK_DIR_NAME}-apk"
 
           # --- 1. 编译 IPK (后台运行) ---
+          # OpenWrt 25.x 默认使用 APK 格式，不再支持 IPK，因此需要检测
           (
             cd "$SDK_DIR_NAME"
             echo "Building IPK format..."
@@ -184,9 +185,13 @@ jobs:
               echo "CONFIG_LUCI_LANG_zh_Hant=y"
             } > .config
             make defconfig
-            make package/${PACKAGE_NAME}/compile V=sw -j$(nproc)
-            mkdir -p output_ipk
-            find ./bin/packages -type f \( -name "${PACKAGE_NAME}*.ipk" -o -name "luci-i18n-${translation_pkg}-*.ipk" \) -exec cp {} output_ipk/ \;
+            if grep -q '^CONFIG_USE_APK=y' .config; then
+              echo "::warning::This SDK defaults to APK format. Skipping IPK compilation."
+            else
+              make package/${PACKAGE_NAME}/compile V=sw -j$(nproc)
+              mkdir -p output_ipk
+              find ./bin/packages -type f \( -name "${PACKAGE_NAME}*.ipk" -o -name "luci-i18n-${translation_pkg}-*.ipk" \) -exec cp {} output_ipk/ \;
+            fi
           ) &
           pid_ipk=$!
 
@@ -265,7 +270,7 @@ jobs:
 
           # 生成索引 (APK)
           if ls "${TARGET_DIR}"/*.apk >/dev/null 2>&1; then
-            docker run --rm -v $(pwd)/${TARGET_DIR}:/work -w /work alpine sh -c "apk add apk-tools && apk index -o APKINDEX.tar.gz *.apk"
+            docker run --rm -v $(pwd)/${TARGET_DIR}:/work -w /work alpine sh -c "apk add apk-tools && apk index --allow-untrusted -o APKINDEX.tar.gz *.apk"
             usign -S -m "${TARGET_DIR}/APKINDEX.tar.gz" -s /tmp/key-build.sig -x "${TARGET_DIR}/APKINDEX.tar.gz.sig"
           fi
 

@@ -11,13 +11,14 @@ on:
 env:
   PACKAGE_NAME: luci-app-tailscale-community
   SDK_DIR: /home/runner/work/openwrt-sdk
+  OPENWRT_VERSION: v25.12.0
 
 permissions:
   contents: write
 
 jobs:
   build:
-    name: Build ${{ matrix.target.name }} (OpenWrt ${{ matrix.version }})
+    name: Build ${{ matrix.target.name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -27,9 +28,6 @@ jobs:
             path: x86/64
           - name: aarch64_generic
             path: armsr/armv8
-        version:
-          - v24.10.3
-          - v25.12.0
 
     steps:
       - name: Checkout package repository
@@ -55,13 +53,13 @@ jobs:
         with:
           path: ${{ env.SDK_DIR }}
           # 缓存键：结合操作系统、目标架构和 OpenWrt 版本，确保环境变化时缓存失效
-          key: ${{ runner.os }}-sdk-${{ matrix.target.name }}-${{ matrix.version }}
+          key: ${{ runner.os }}-sdk-${{ matrix.target.name }}-${{ env.OPENWRT_VERSION }}
 
       - name: Download, extract OpenWrt SDK and update feeds
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          # 从矩阵变量中移除 'v' 前缀以匹配版本号
-          release_version="${{ matrix.version }}"
+          # 从环境变量中移除 'v' 前缀以匹配版本号
+          release_version="${{ env.OPENWRT_VERSION }}"
           release_version="${release_version#v}"
           sdk_url_prefix="https://downloads.openwrt.org/releases/${release_version}/targets/${{ matrix.target.path }}"
 
@@ -156,9 +154,8 @@ jobs:
           fi
 
           # 清理上次构建的产物（SDK 缓存可能包含旧文件）
-          rm -rf output_ipk output_apk upload
+          rm -rf output_apk upload
           mkdir -p ./bin/packages
-          find ./bin -type f -name "${PACKAGE_NAME}*.ipk" -delete
           find ./bin -type f -name "${PACKAGE_NAME}*.apk" -delete
 
       - name: Compile the package
@@ -166,66 +163,19 @@ jobs:
         run: |
           translation_pkg=${PACKAGE_NAME#luci-app-}
 
-          # 为了实现 IPK 和 APK 的完全并行编译且互不干扰
-          # 在父目录为 APK 编译创建一个 SDK 目录的硬链接副本
-          cd ..
-          SDK_DIR_NAME=$(basename ${{ env.SDK_DIR }})
-          cp -al "$SDK_DIR_NAME" "${SDK_DIR_NAME}-apk"
-
-          # --- 1. 编译 IPK (后台运行) ---
-          # OpenWrt 25.x 默认使用 APK 格式，不再支持 IPK，因此需要检测
-          (
-            cd "$SDK_DIR_NAME"
-            echo "Building IPK format..."
-            {
-              echo "CONFIG_PACKAGE_${PACKAGE_NAME}=m"
-              echo "CONFIG_PACKAGE_luci-i18n-${translation_pkg}-zh-cn=m"
-              echo "CONFIG_PACKAGE_luci-i18n-${translation_pkg}-zh-tw=m"
-              echo "CONFIG_LUCI_LANG_zh_Hans=y"
-              echo "CONFIG_LUCI_LANG_zh_Hant=y"
-            } > .config
-            make defconfig
-            if grep -q '^CONFIG_USE_APK=y' .config; then
-              echo "::warning::This SDK defaults to APK format. Skipping IPK compilation."
-            else
-              make package/${PACKAGE_NAME}/compile V=sw -j$(nproc)
-              mkdir -p output_ipk
-              find ./bin/packages -type f \( -name "${PACKAGE_NAME}*.ipk" -o -name "luci-i18n-${translation_pkg}-*.ipk" \) -exec cp {} output_ipk/ \;
-            fi
-          ) &
-          pid_ipk=$!
-
-          # --- 2. 编译 APK (后台运行，在副本目录执行) ---
-          (
-            cd "${SDK_DIR_NAME}-apk"
-            echo "Building APK format..."
-            {
-              echo "CONFIG_PACKAGE_${PACKAGE_NAME}=m"
-              echo "CONFIG_PACKAGE_luci-i18n-${translation_pkg}-zh-cn=m"
-              echo "CONFIG_PACKAGE_luci-i18n-${translation_pkg}-zh-tw=m"
-              echo "CONFIG_LUCI_LANG_zh_Hans=y"
-              echo "CONFIG_LUCI_LANG_zh_Hant=y"
-              echo "CONFIG_USE_APK=y"
-            } > .config
-            make defconfig
-            if grep -q '^CONFIG_USE_APK=y' .config; then
-              make package/${PACKAGE_NAME}/compile V=sw -j$(nproc)
-              mkdir -p output_apk
-              find ./bin/packages -type f \( -name "${PACKAGE_NAME}*.apk" -o -name "luci-i18n-${translation_pkg}-*.apk" \) -exec cp {} output_apk/ \;
-            else
-              echo "::warning::CONFIG_USE_APK not supported by this SDK. Skipping."
-            fi
-          ) &
-          pid_apk=$!
-
-          # 等待所有并行编译任务完成
-          wait $pid_ipk $pid_apk
-
-          # 将 APK 编译结果移动回主 SDK 目录以供后续步骤统一处理
-          cd "$SDK_DIR_NAME"
-          if [ -d "../${SDK_DIR_NAME}-apk/output_apk" ]; then
-            mv "../${SDK_DIR_NAME}-apk/output_apk" ./
-          fi
+          echo "Building APK format..."
+          {
+            echo "CONFIG_PACKAGE_${PACKAGE_NAME}=m"
+            echo "CONFIG_PACKAGE_luci-i18n-${translation_pkg}-zh-cn=m"
+            echo "CONFIG_PACKAGE_luci-i18n-${translation_pkg}-zh-tw=m"
+            echo "CONFIG_LUCI_LANG_zh_Hans=y"
+            echo "CONFIG_LUCI_LANG_zh_Hant=y"
+            echo "CONFIG_USE_APK=y"
+          } > .config
+          make defconfig
+          make package/${PACKAGE_NAME}/compile V=sw -j$(nproc)
+          mkdir -p output_apk
+          find ./bin/packages -type f \( -name "${PACKAGE_NAME}*.apk" -o -name "luci-i18n-${translation_pkg}-*.apk" \) -exec cp {} output_apk/ \;
 
       - name: Collect artifacts
         id: collect_artifacts
@@ -233,7 +183,6 @@ jobs:
         run: |
           REL_PATH="all"
           mkdir -p "upload/${REL_PATH}"
-          [ -d "output_ipk" ] && cp output_ipk/*.ipk "upload/${REL_PATH}/" || true
           [ -d "output_apk" ] && cp output_apk/*.apk "upload/${REL_PATH}/" || true
 
           if [ -z "$(ls -A upload/${REL_PATH})" ]; then echo "No packages found!"; exit 1; fi
@@ -256,19 +205,8 @@ jobs:
             echo "${KEY_HEX:0:4}${KEY_HEX:64:16}${KEY_HEX:144:64}" | xxd -r -p | base64 -w 0 >> "upload/${REL_PATH}/key-build.pub"
           fi
 
-          # 生成索引 (IPK)
-          TARGET_DIR="upload/${REL_PATH}"
-          if ls "${TARGET_DIR}"/*.ipk >/dev/null 2>&1; then
-            touch "${TARGET_DIR}/Packages"
-            for ipk in "${TARGET_DIR}"/*.ipk; do
-              pkg_info=$(tar -xOzf "$ipk" ./control.tar.gz | tar -xOzf - ./control 2>/dev/null || tar -xOzf "$ipk" control.tar.gz | tar -xOzf - control)
-              { echo "$pkg_info"; echo "Filename: $(basename $ipk)"; echo "Size: $(stat -c%s $ipk)"; echo "SHA256sum: $(sha256sum $ipk | awk '{print $1}')"; echo ""; } >> "${TARGET_DIR}/Packages"
-            done
-            gzip -9nc "${TARGET_DIR}/Packages" > "${TARGET_DIR}/Packages.gz"
-            usign -S -m "${TARGET_DIR}/Packages" -s /tmp/key-build.sig -x "${TARGET_DIR}/Packages.sig"
-          fi
-
           # 生成索引 (APK)
+          TARGET_DIR="upload/${REL_PATH}"
           if ls "${TARGET_DIR}"/*.apk >/dev/null 2>&1; then
             docker run --rm -v $(pwd)/${TARGET_DIR}:/work -w /work alpine sh -c "apk add apk-tools && apk index --allow-untrusted -o APKINDEX.tar.gz *.apk"
             usign -S -m "${TARGET_DIR}/APKINDEX.tar.gz" -s /tmp/key-build.sig -x "${TARGET_DIR}/APKINDEX.tar.gz.sig"
@@ -282,7 +220,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: packages-${{ matrix.target.name }}-${{ matrix.version }}
+          name: packages-${{ matrix.target.name }}
           path: ${{ env.SDK_DIR }}/${{ steps.collect_artifacts.outputs.path }}
 
   deploy:
@@ -301,8 +239,8 @@ jobs:
           # 从头创建 deploy 目录，确保不包含任何旧文件
           mkdir -p deploy/all
 
-          # 只复制新生成的 ipk 和 apk 文件
-          find downloaded-artifacts/packages-* -type f \( -name "*.ipk" -o -name "*.apk" -o -name "Packages*" -o -name "APKINDEX*" -o -name "key-build.pub" \) -exec cp {} deploy/all/ \;
+          # 只复制新生成的 apk 文件
+          find downloaded-artifacts/packages-* -type f \( -name "*.apk" -o -name "APKINDEX*" -o -name "key-build.pub" \) -exec cp {} deploy/all/ \;
 
           # 验证没有私钥文件泄露
           if find deploy -name "key-build.sig" -type f | grep -q .; then
@@ -382,5 +320,4 @@ jobs:
           name: ${{ github.ref_name }}
           generate_release_notes: true
           files: |
-            release-assets/packages-*/**/*.ipk
             release-assets/packages-*/**/*.apk

@@ -9,7 +9,6 @@ on:
   workflow_dispatch:
 
 env:
-  OPENWRT_VERSION: v24.10.3
   PACKAGE_NAME: luci-app-tailscale-community
   SDK_DIR: /home/runner/work/openwrt-sdk
 
@@ -18,7 +17,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Packages for ${{ matrix.target.name }}
+    name: Build ${{ matrix.target.name }} (OpenWrt ${{ matrix.version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -26,6 +25,11 @@ jobs:
         target:
           - name: x86_64
             path: x86/64
+          - name: aarch64_generic
+            path: armsr/armv8
+        version:
+          - v24.10.3
+          - v25.12.0
 
     steps:
       - name: Checkout package repository
@@ -51,18 +55,19 @@ jobs:
         with:
           path: ${{ env.SDK_DIR }}
           # 缓存键：结合操作系统、目标架构和 OpenWrt 版本，确保环境变化时缓存失效
-          key: ${{ runner.os }}-sdk-${{ matrix.target.name }}-${{ env.OPENWRT_VERSION }}
+          key: ${{ runner.os }}-sdk-${{ matrix.target.name }}-${{ matrix.version }}
 
       - name: Download, extract OpenWrt SDK and update feeds
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          # 从环境变量中移除 'v' 前缀以匹配版本号
-          release_version="${OPENWRT_VERSION#v}"
+          # 从矩阵变量中移除 'v' 前缀以匹配版本号
+          release_version="${{ matrix.version }}"
+          release_version="${release_version#v}"
           sdk_url_prefix="https://downloads.openwrt.org/releases/${release_version}/targets/${{ matrix.target.path }}"
 
           # 查找 SDK 文件名
           sdk_filename=$(curl -s "$sdk_url_prefix/" | \
-                        grep -o '<a href="openwrt-sdk-.*-x86_64\.tar\.\(xz\|zst\)">' | \
+                        grep -o '<a href="openwrt-sdk-[^"]*\.tar\.\(xz\|zst\)">' | \
                         sed -e 's/.*<a href="//' -e 's/">//' | \
                         head -n 1)
 
@@ -272,7 +277,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: packages-${{ matrix.target.name }}
+          name: packages-${{ matrix.target.name }}-${{ matrix.version }}
           path: ${{ env.SDK_DIR }}/${{ steps.collect_artifacts.outputs.path }}
 
   deploy:

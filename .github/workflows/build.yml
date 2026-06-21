@@ -10,34 +10,21 @@ on:
 
 env:
   PACKAGE_NAME: luci-app-tailscale-community
-  SDK_DIR: /home/runner/work/openwrt-sdk
-  OPENWRT_VERSION: v25.12.0
+  OPENWRT_VERSION: "25.12.0"
 
 permissions:
   contents: write
 
 jobs:
   build:
-    name: Build ${{ matrix.target.name }}
+    name: Build aarch64_generic
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - name: x86_64
-            path: x86/64
-          - name: aarch64_generic
-            path: armsr/armv8
 
     steps:
       - name: Checkout package repository
         uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential rsync unzip zstd coreutils cmake
-          sudo ln -sf /usr/bin/sha256sum /usr/bin/sha256
+        with:
+          path: repo
 
       - name: Setup usign
         run: |
@@ -47,181 +34,124 @@ jobs:
           sudo make install
           cd ../.. && rm -rf usign
 
-      - name: Cache OpenWrt SDK
-        id: cache-sdk
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.SDK_DIR }}
-          # 缓存键：结合操作系统、目标架构和 OpenWrt 版本，确保环境变化时缓存失效
-          key: ${{ runner.os }}-sdk-${{ matrix.target.name }}-${{ env.OPENWRT_VERSION }}
-
-      - name: Download, extract OpenWrt SDK and update feeds
-        if: steps.cache-sdk.outputs.cache-hit != 'true'
+      - name: Pull OpenWrt SDK Docker image
         run: |
-          # 从环境变量中移除 'v' 前缀以匹配版本号
-          release_version="${{ env.OPENWRT_VERSION }}"
-          release_version="${release_version#v}"
-          sdk_url_prefix="https://downloads.openwrt.org/releases/${release_version}/targets/${{ matrix.target.path }}"
+          docker pull ghcr.io/openwrt/sdk:aarch64_generic-V${{ env.OPENWRT_VERSION }}
 
-          # 查找 SDK 文件名
-          sdk_filename=$(curl -s "$sdk_url_prefix/" | \
-                        grep -o '<a href="openwrt-sdk-[^"]*\.tar\.\(xz\|zst\)">' | \
-                        sed -e 's/.*<a href="//' -e 's/">//' | \
-                        head -n 1)
-
-          if [ -z "$sdk_filename" ]; then
-            echo "::error::Could not find SDK file at ${sdk_url_prefix}/"
-            echo "Available files:"
-            curl -s "$sdk_url_prefix/" | grep -o '<a href="[^"]*">[^<]*</a>' | sed -e 's/<a href="\(.*\)".*>\(.*\)/\1\t\2/'
-            exit 1
+      - name: Determine version
+        id: version
+        working-directory: repo
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION=$(echo "${{ github.ref_name }}" | sed 's/^v//')
+            RELEASE="1"
+          else
+            VERSION=$(date +"%Y.%m.%d")
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            RELEASE="${{ github.run_number }}.git-${SHORT_SHA}"
           fi
-
-          echo "Downloading SDK: ${sdk_url_prefix}/${sdk_filename}"
-          wget -q "${sdk_url_prefix}/${sdk_filename}"
-
-          echo "Extracting SDK..."
-          # 解压 SDK 并重命名为固定的目录名，以匹配缓存路径
-          tar -xf "$sdk_filename"
-          mv $(find . -maxdepth 1 -type d -name 'openwrt-sdk-*') ${{ env.SDK_DIR }}
-
-          echo "Updating feeds..."
-          cd ${{ env.SDK_DIR }}
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a && echo "success" || echo "::warning::failed but expected"
-          cd ..
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "release=${RELEASE}" >> $GITHUB_OUTPUT
+          echo "Build version: ${VERSION}-${RELEASE}"
 
       - name: Prepare build environment
-        working-directory: ${{ env.SDK_DIR }}
         run: |
-          rm -rf package/${PACKAGE_NAME}
-          mkdir -p package/${PACKAGE_NAME}
-          src_dir="${{ github.workspace }}"
+          mkdir -p bin build_pkg keys
 
-          echo "Searching for Makefile in: $src_dir"
-          # 查找 Makefile，最大深度3，按路径长度排序，优先取最短路径的(通常是根目录的)
-          # 过滤掉路径中包含 /bin/ 或 /obj/ 的干扰项
-          FOUND_MK=$(find "$src_dir" -maxdepth 3 -name Makefile -not -path "*/.*" | awk '{ print length, $0 }' | sort -n | cut -d" " -f2- | head -n 1)
+          # 复制包源码（复制目录内容，不要嵌套）
+          cp -r repo/luci-app-tailscale-community/. build_pkg/
 
-          if [ -z "$FOUND_MK" ]; then
-            echo "::error::Could not find any Makefile in the repository!"
-            ls -R "$src_dir"
-            exit 1
+          # 动态注入版本号（如果 Makefile 中没有 PKG_VERSION）
+          TARGET_MK="build_pkg/Makefile"
+          if ! grep -q "^PKG_VERSION:=" "$TARGET_MK"; then
+            sed -i "s|include \$(TOPDIR)/rules.mk|include \$(TOPDIR)/rules.mk\nPKG_VERSION:=${{ steps.version.outputs.version }}\nPKG_RELEASE:=${{ steps.version.outputs.release }}|" "$TARGET_MK"
           fi
 
-          echo "Found primary Makefile at: $FOUND_MK"
-          pkg_src_dir=$(dirname "$FOUND_MK")
-          echo "Determined package source root: $pkg_src_dir"
+          chmod -R 777 bin
 
-          rsync -a --delete "${pkg_src_dir}/" ./package/${PACKAGE_NAME}/
-
-          # 验证复制结果
-          TARGET_MK="./package/${PACKAGE_NAME}/Makefile"
-          if [ ! -f "$TARGET_MK" ]; then
-            echo "::error::Failed to migrate code. Makefile missing at $TARGET_MK"
-            ls -R package/${PACKAGE_NAME}
-            exit 1
-          fi
-          echo "Code migration successful. Structure verified."
-
-          # 检查 Makefile 中是否已存在 PKG_VERSION 定义
-          if grep -q "^PKG_VERSION:=" "$TARGET_MK"; then
-            echo "Static PKG_VERSION found in Makefile. Using upstream version definition."
-            echo "::notice::You should not manually define PKG_VERSION or PKG_RELEASE in the Makefile. You should try using dynamic versioning."
-          else
-            echo "No static PKG_VERSION found. Applying dynamic versioning."
-
-            NEW_VER=""
-            NEW_REL=""
-
-            if [ "${{ github.ref_type }}" = "tag" ]; then
-              # === 场景 A: Release Tag ===
-              NEW_VER=$(echo "${{ github.ref_name }}" | sed 's/^v//')
-              NEW_REL="1"
-              echo "Build triggered by Tag: Using Version=$NEW_VER, Release=$NEW_REL"
-            else
-              # === 场景 B: 普通 Commit (调试构建) ===
-              # Version = 日期 (YYYY.MM.DD)
-              NEW_VER=$(date +"%Y.%m.%d")
-
-              # Release = BuildNumber.git-ShortHash
-              SHORT_SHA=$(git -C "$src_dir" rev-parse --short HEAD)
-              NEW_REL="${{ github.run_number }}.git-$SHORT_SHA"
-              echo "Build triggered by Commit: Using Version=$NEW_VER, Release=$NEW_REL"
-            fi
-
-            # 动态注入版本号
-            sed -i "s|include \$(TOPDIR)/rules.mk|include \$(TOPDIR)/rules.mk\nPKG_VERSION:=$NEW_VER\nPKG_RELEASE:=$NEW_REL|" "$TARGET_MK"
-          fi
-
-          # 清理上次构建的产物（SDK 缓存可能包含旧文件）
-          rm -rf output_apk upload
-          mkdir -p ./bin/packages
-          find ./bin -type f -name "${PACKAGE_NAME}*.apk" -delete
-
-      - name: Compile the package
-        working-directory: ${{ env.SDK_DIR }}
+      - name: Build APK package
         run: |
-          translation_pkg=${PACKAGE_NAME#luci-app-}
+          docker run --rm \
+            -v "$(pwd)/bin:/builder/bin:z" \
+            -v "$(pwd)/build_pkg:/builder/package/${{ env.PACKAGE_NAME }}:ro,z" \
+            -e TERM=xterm \
+            -e FORCE=1 \
+            ghcr.io/openwrt/sdk:aarch64_generic-V${{ env.OPENWRT_VERSION }} \
+            bash -c '
+              set -e
 
-          echo "Building APK format..."
-          {
-            echo "CONFIG_PACKAGE_${PACKAGE_NAME}=m"
-            echo "CONFIG_PACKAGE_luci-i18n-${translation_pkg}-zh-cn=m"
-            echo "CONFIG_PACKAGE_luci-i18n-${translation_pkg}-zh-tw=m"
-            echo "CONFIG_LUCI_LANG_zh_Hans=y"
-            echo "CONFIG_LUCI_LANG_zh_Hant=y"
-            echo "CONFIG_USE_APK=y"
-          } > .config
-          make defconfig
-          make package/${PACKAGE_NAME}/compile V=sw -j$(nproc)
-          mkdir -p output_apk
-          find ./bin/packages -type f \( -name "${PACKAGE_NAME}*.apk" -o -name "luci-i18n-${translation_pkg}-*.apk" \) -exec cp {} output_apk/ \;
+              # 更新 feeds（获取 luci 依赖）
+              ./scripts/feeds update -a
+              ./scripts/feeds install -a || true
+
+              TRANSLATION_PKG="${{ env.PACKAGE_NAME }}"
+              TRANSLATION_PKG="${TRANSLATION_PKG#luci-app-}"
+
+              # 配置构建
+              cat > .config <<EOF
+          CONFIG_PACKAGE_${{ env.PACKAGE_NAME }}=m
+          CONFIG_PACKAGE_luci-i18n-${TRANSLATION_PKG}-zh-cn=m
+          CONFIG_PACKAGE_luci-i18n-${TRANSLATION_PKG}-zh-tw=m
+          CONFIG_LUCI_LANG_zh_Hans=y
+          CONFIG_LUCI_LANG_zh_Hant=y
+          CONFIG_USE_APK=y
+          EOF
+              make defconfig
+              make package/${{ env.PACKAGE_NAME }}/compile V=sw -j$(nproc)
+            '
 
       - name: Collect artifacts
         id: collect_artifacts
-        working-directory: ${{ env.SDK_DIR }}
         run: |
-          REL_PATH="all"
-          mkdir -p "upload/${REL_PATH}"
-          [ -d "output_apk" ] && cp output_apk/*.apk "upload/${REL_PATH}/" || true
+          TRANSLATION_PKG="${PACKAGE_NAME#luci-app-}"
+          mkdir -p upload/all
 
-          if [ -z "$(ls -A upload/${REL_PATH})" ]; then echo "No packages found!"; exit 1; fi
+          # 收集 APK 包
+          find bin/packages -type f \( -name "${PACKAGE_NAME}*.apk" -o -name "luci-i18n-${TRANSLATION_PKG}-*.apk" \) -exec cp {} upload/all/ \;
+
+          if [ -z "$(ls -A upload/all/)" ]; then
+            echo "::error::No packages found!"
+            exit 1
+          fi
 
           # 签名处理
           if [ -z "${{ secrets.USIGN_KEY }}" ]; then
             echo "::warning title=Missing USIGN_KEY::GitHub Secret 'USIGN_KEY' is not set. A temporary key has been generated for this build."
-            usign -G -s /tmp/key-build.sig -p "upload/${REL_PATH}/key-build.pub" -c "Local build key"
+            usign -G -s /tmp/key-build.sig -p "upload/all/key-build.pub" -c "Local build key"
             echo "::warning::Temporary signing key generated. Please save the following Private Key to your repository secrets as 'USIGN_KEY' to maintain consistent signatures:"
             echo "------------------- BEGIN KEY -------------------"
             cat /tmp/key-build.sig
             echo "-------------------- END KEY --------------------"
           else
             echo "${{ secrets.USIGN_KEY }}" > /tmp/key-build.sig
-            # Extract public key from secret key (usign has no built-in command for this)
-            # Hex offsets: pkalg=0:4, fingerprint=64:80, pubkey=144:208 (byte*2)
             KEY_HEX=$(tail -n 1 /tmp/key-build.sig | base64 -d | xxd -p | tr -d '\n')
             [ ${#KEY_HEX} -eq 208 ] || { echo "::error::Invalid USIGN_KEY (expected 104 bytes)"; exit 1; }
-            echo "untrusted comment: public key ${KEY_HEX:64:16}" > "upload/${REL_PATH}/key-build.pub"
-            echo "${KEY_HEX:0:4}${KEY_HEX:64:16}${KEY_HEX:144:64}" | xxd -r -p | base64 -w 0 >> "upload/${REL_PATH}/key-build.pub"
+            echo "untrusted comment: public key ${KEY_HEX:64:16}" > "upload/all/key-build.pub"
+            echo "${KEY_HEX:0:4}${KEY_HEX:64:16}${KEY_HEX:144:64}" | xxd -r -p | base64 -w 0 >> "upload/all/key-build.pub"
           fi
 
-          # 生成索引 (APK) - 使用 SDK 自带的 apk 工具以支持 APK v3 格式
-          TARGET_DIR="upload/${REL_PATH}"
-          if ls "${TARGET_DIR}"/*.apk >/dev/null 2>&1; then
-            (cd "${TARGET_DIR}" && ${{ env.SDK_DIR }}/staging_dir/host/bin/apk mkndx --allow-untrusted -o APKINDEX.tar.gz *.apk)
-            usign -S -m "${TARGET_DIR}/APKINDEX.tar.gz" -s /tmp/key-build.sig -x "${TARGET_DIR}/APKINDEX.tar.gz.sig"
+          # 生成索引 - 使用 SDK Docker 容器内的 apk 工具（支持 APK v3）
+          if ls upload/all/*.apk >/dev/null 2>&1; then
+            docker run --rm \
+              -v "$(pwd)/upload/all:/work:z" \
+              -w /work \
+              ghcr.io/openwrt/sdk:aarch64_generic-V${{ env.OPENWRT_VERSION }} \
+              bash -c './staging_dir/host/bin/apk mkndx --allow-untrusted -o APKINDEX.tar.gz *.apk'
+            usign -S -m "upload/all/APKINDEX.tar.gz" -s /tmp/key-build.sig -x "upload/all/APKINDEX.tar.gz.sig"
           fi
 
           # 清理私钥
           rm -f /tmp/key-build.sig
 
           echo "path=upload" >> $GITHUB_OUTPUT
+          echo "Artifacts collected:"
+          ls -la upload/all/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: packages-${{ matrix.target.name }}
-          path: ${{ env.SDK_DIR }}/${{ steps.collect_artifacts.outputs.path }}
+          name: packages-aarch64_generic
+          path: upload/
 
   deploy:
     name: Deploy to GitHub Pages
@@ -236,10 +166,8 @@ jobs:
 
       - name: Organize and Deploy
         run: |
-          # 从头创建 deploy 目录，确保不包含任何旧文件
           mkdir -p deploy/all
 
-          # 只复制新生成的 apk 文件
           find downloaded-artifacts/packages-* -type f \( -name "*.apk" -o -name "APKINDEX*" -o -name "key-build.pub" \) -exec cp {} deploy/all/ \;
 
           # 验证没有私钥文件泄露
@@ -261,31 +189,23 @@ jobs:
                   pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow: auto; }
                   code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
                   .footer { margin-top: 40px; font-size: 0.8em; color: #666; border-top: 1px solid #eee; padding-top: 20px; }
-                  .arch-list { list-style: none; padding: 0; }
-                  .arch-list li { margin-bottom: 10px; padding: 10px; background: #fff; border: 1px solid #e1e4e8; border-radius: 6px; }
               </style>
           </head>
           <body>
-              <h1>${{ env.PACKAGE_NAME }} OPKG Feed</h1>
-              <p>这是 <strong>${{ env.PACKAGE_NAME }}</strong> 的官方软件源托管地址。</p>
+              <h1>${{ env.PACKAGE_NAME }} APK Feed</h1>
+              <p>这是 <strong>${{ env.PACKAGE_NAME }}</strong> 的官方软件源托管地址（OpenWrt 25.x APK 格式）。</p>
 
               <h3>如何使用 (How to use)</h3>
-              <p>在你的 OpenWrt 终端运行以下命令：</p>
+              <p>在你的 OpenWrt 25.x 终端运行以下命令：</p>
               <pre><code># 1. 添加公钥
-          wget https://$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]').github.io/${{ env.PACKAGE_NAME }}/all/key-build.pub -O /tmp/key-build.pub
-          opkg-key add /tmp/key-build.pub
+          wget https://$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]').github.io/${{ env.PACKAGE_NAME }}/all/key-build.pub -O /etc/apk/keys/key-build.pub
 
           # 2. 添加软件源
-          echo "src/gz ${{ env.PACKAGE_NAME }} https://$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]').github.io/${{ env.PACKAGE_NAME }}/all" >> /etc/opkg/customfeeds.conf
+          echo "https://$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]').github.io/${{ env.PACKAGE_NAME }}/all" >> /etc/apk/repositories
 
           # 3. 更新并安装
-          opkg update
-          opkg install ${{ env.PACKAGE_NAME }}</code></pre>
-
-              <h3>可用架构 (Available Architectures)</h3>
-              <ul class="arch-list">
-                  <li><strong>all</strong>: <code>https://$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]').github.io/${{ env.PACKAGE_NAME }}/all</code></li>
-              </ul>
+          apk update
+          apk add ${{ env.PACKAGE_NAME }}</code></pre>
 
               <div class="footer">
                   <p>Generated by GitHub Actions at $(date -u)</p>

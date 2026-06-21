@@ -205,10 +205,10 @@ jobs:
             echo "${KEY_HEX:0:4}${KEY_HEX:64:16}${KEY_HEX:144:64}" | xxd -r -p | base64 -w 0 >> "upload/${REL_PATH}/key-build.pub"
           fi
 
-          # 生成索引 (APK)
+          # 生成索引 (APK) - 使用 SDK 自带的 apk 工具以支持 APK v3 格式
           TARGET_DIR="upload/${REL_PATH}"
           if ls "${TARGET_DIR}"/*.apk >/dev/null 2>&1; then
-            docker run --rm -v $(pwd)/${TARGET_DIR}:/work -w /work alpine sh -c "apk add apk-tools && apk index --allow-untrusted -o APKINDEX.tar.gz *.apk"
+            (cd "${TARGET_DIR}" && ${{ env.SDK_DIR }}/staging_dir/host/bin/apk mkndx --allow-untrusted -o APKINDEX.tar.gz *.apk)
             usign -S -m "${TARGET_DIR}/APKINDEX.tar.gz" -s /tmp/key-build.sig -x "${TARGET_DIR}/APKINDEX.tar.gz.sig"
           fi
 

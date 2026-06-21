@@ -48,7 +48,7 @@ jobs:
           else
             VERSION=$(date +"%Y.%m.%d")
             SHORT_SHA=$(git rev-parse --short HEAD)
-            RELEASE="${{ github.run_number }}.git-${SHORT_SHA}"
+            RELEASE="${{ github.run_number }}.git${SHORT_SHA}"
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "release=${RELEASE}" >> $GITHUB_OUTPUT

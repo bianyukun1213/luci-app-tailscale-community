@@ -136,7 +136,7 @@ jobs:
               -v "$(pwd)/upload/all:/work:z" \
               -w /work \
               ghcr.io/openwrt/sdk:aarch64_generic-V${{ env.OPENWRT_VERSION }} \
-              bash -c './staging_dir/host/bin/apk mkndx --allow-untrusted -o APKINDEX.tar.gz *.apk'
+              bash -c '/builder/staging_dir/host/bin/apk mkndx --allow-untrusted -o APKINDEX.tar.gz *.apk'
             usign -S -m "upload/all/APKINDEX.tar.gz" -s /tmp/key-build.sig -x "upload/all/APKINDEX.tar.gz.sig"
           fi
 
@@ -152,4 +152,3 @@ jobs:
         with:
           name: packages-aarch64_generic
           path: upload/
-
